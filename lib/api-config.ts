@@ -1,8 +1,18 @@
+interface RuntimeEnv {
+  NEXT_PUBLIC_IMGDOSE_API_BASE_URL?: string;
+}
+
+declare global {
+  interface Window {
+    __ENV__?: RuntimeEnv;
+  }
+}
+
 export function getApiBaseUrl(): string {
   // For static export, environment variables must be accessed at runtime via window
   if (typeof window !== "undefined") {
     // Check if runtime config is available (injected by Cloudflare Pages)
-    const runtimeEnv = (window as any).__ENV__;
+    const runtimeEnv = window.__ENV__;
     if (runtimeEnv?.NEXT_PUBLIC_IMGDOSE_API_BASE_URL) {
       return stripTrailingSlash(runtimeEnv.NEXT_PUBLIC_IMGDOSE_API_BASE_URL);
     }
