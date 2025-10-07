@@ -11,6 +11,16 @@ const nextConfig: NextConfig = {
 
   // Disable trailing slashes for cleaner URLs
   trailingSlash: false,
+
+  // Exclude workers from TypeScript checks
+  typescript: {
+    ignoreBuildErrors: false,
+  },
+
+  eslint: {
+    ignoreDuringBuilds: false,
+    dirs: ["app", "components", "hooks", "lib"],
+  },
 };
 
 export default nextConfig;
