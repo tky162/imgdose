@@ -21,7 +21,7 @@
 
 ### Environment Variables
 
-- `IMGDOSE_CORS_ORIGIN`: http://localhost:3000 (Pages デプロイ後に更新が必要)
+- `IMGDOSE_CORS_ORIGIN`: https://imgdose.pages.dev ✅
 - `IMGDOSE_BUCKET_NAME`: imgdose
 - `IMGDOSE_LOG_LEVEL`: info
 
@@ -35,9 +35,11 @@
 
 ## Pages Deployment
 
-### Status: ⏳ PENDING - Setup Required
+### Status: ✅ DEPLOYED
 
-Pages は **Git Integration** 方式で Cloudflare Dashboard から設定します。
+- **URL**: https://imgdose.pages.dev
+- **Deployment**: Git Integration (自動デプロイ)
+- **Branch**: main
 
 ### Setup Steps (Cloudflare Dashboard)
 
