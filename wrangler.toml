@@ -4,7 +4,7 @@ compatibility_date = "2025-01-15"
 compatibility_flags = ["nodejs_compat"]
 
 logpush = true
-workers_dev = false
+workers_dev = true
 
 [vars]
 IMGDOSE_CORS_ORIGIN = "http://localhost:3000"
