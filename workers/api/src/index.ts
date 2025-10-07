@@ -87,6 +87,87 @@ function logError(env: Env, message: string, error?: unknown, details?: unknown)
   }
 }
 
+function validateFile(file: File): void {
+  if (!file.type || !ALLOWED_MIME_TYPES.includes(file.type)) {
+    throw new Error(
+      `Invalid file type: ${file.type}. Allowed: ${ALLOWED_MIME_TYPES.join(", ")}`
+    );
+  }
+
+  if (file.size > MAX_FILE_BYTES) {
+    const maxMB = MAX_FILE_BYTES / 1024 / 1024;
+    const fileMB = (file.size / 1024 / 1024).toFixed(2);
+    throw new Error(`File too large: ${fileMB}MB. Maximum: ${maxMB}MB`);
+  }
+
+  if (file.size === 0) {
+    throw new Error("File is empty");
+  }
+}
+
+async function storeFile(env: Env, file: File, request: Request): Promise<StoredImage> {
+  const timestamp = Date.now();
+  const id = crypto.randomUUID();
+  const sanitized = sanitizeFilename(file.name || "unnamed");
+  const extension = sanitized.includes(".")
+    ? sanitized.split(".").pop() || null
+    : null;
+
+  // Generate unique object key
+  const objectKey = `${timestamp}-${crypto.randomUUID()}.${extension || "bin"}`;
+
+  // Upload to R2
+  await env.IMGDOSE_BUCKET.put(objectKey, file, {
+    httpMetadata: {
+      contentType: file.type,
+    },
+  });
+
+  // Build public URL via Worker
+  const workerUrl = new URL(request.url);
+  const publicUrl = `${workerUrl.origin}/files/${objectKey}`;
+
+  // Insert into D1
+  const result = await env.IMGDOSE_DB.prepare(
+    `INSERT INTO images (id, object_key, original_filename, content_type, file_size, uploaded_at, file_extension, public_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      id,
+      objectKey,
+      sanitized,
+      file.type,
+      file.size,
+      timestamp,
+      extension,
+      publicUrl
+    )
+    .run();
+
+  if (!result.success) {
+    // Rollback R2 upload on DB failure
+    await env.IMGDOSE_BUCKET.delete(objectKey);
+    throw new Error("Failed to save metadata to database");
+  }
+
+  logInfo(env, "File stored successfully", {
+    id,
+    filename: sanitized,
+    size: file.size,
+  });
+
+  return {
+    id,
+    objectKey,
+    originalFilename: sanitized,
+    contentType: file.type,
+    fileSize: file.size,
+    uploadedAt: new Date(timestamp).toISOString(),
+    fileExtension: extension || undefined,
+    publicUrl,
+  };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -115,9 +196,46 @@ export default {
       return handleImageArchive(request, env);
     }
 
+    if (request.method === "GET" && url.pathname.startsWith("/files/")) {
+      return handleFileServe(request, env);
+    }
+
     return json(env, request, { ok: false, error: "Not Found" }, 404);
   },
 };
+
+async function handleFileServe(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const objectKey = url.pathname.replace("/files/", "");
+
+  if (!objectKey) {
+    return new Response("Not Found", { status: 404 });
+  }
+
+  try {
+    const object = await env.IMGDOSE_BUCKET.get(objectKey);
+
+    if (!object) {
+      return new Response("File not found", { status: 404 });
+    }
+
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set("etag", object.httpEtag);
+    headers.set("cache-control", "public, max-age=31536000, immutable");
+
+    // Add CORS headers
+    const corsHeaders = buildCorsHeaders(env, request);
+    corsHeaders.forEach((value, key) => headers.set(key, value));
+
+    return new Response(object.body, {
+      headers,
+    });
+  } catch (error) {
+    logError(env, "Failed to serve file", error, { objectKey });
+    return new Response("Internal Server Error", { status: 500 });
+  }
+}
 
 async function handleImageUpload(request: Request, env: Env): Promise<Response> {
   const formData = await request.formData();
@@ -139,7 +257,7 @@ async function handleImageUpload(request: Request, env: Env): Promise<Response> 
     const filename = file.name || "noname";
     try {
       validateFile(file);
-      const stored = await storeFile(env, file);
+      const stored = await storeFile(env, file, request);
       results.push({ success: true, filename, image: stored });
     } catch (error) {
       logError(env, "Failed to upload file", error, { filename });
@@ -293,43 +411,29 @@ async function handleImageDelete(request: Request, env: Env): Promise<Response> 
   const failures: Array<{ id: string; reason: string }> = [];
   const deleted: string[] = [];
 
-  await env.IMGDOSE_DB.prepare("BEGIN TRANSACTION").run();
-  try {
-    for (const [id, objectKey] of keyById.entries()) {
-      try {
-        await env.IMGDOSE_BUCKET.delete(objectKey);
-      } catch (bucketError) {
-        logError(env, "Failed to delete object from R2", bucketError, { id, objectKey });
-        failures.push({
-          id,
-          reason: bucketError instanceof Error ? bucketError.message : String(bucketError),
-        });
-        continue;
-      }
+  // Delete from R2 and D1
+  for (const [id, objectKey] of keyById.entries()) {
+    try {
+      // Delete from R2
+      await env.IMGDOSE_BUCKET.delete(objectKey);
 
-      try {
-        await env.IMGDOSE_DB.prepare("DELETE FROM images WHERE id = ?1").bind(id).run();
+      // Delete from D1
+      const result = await env.IMGDOSE_DB.prepare("DELETE FROM images WHERE id = ?")
+        .bind(id)
+        .run();
+
+      if (result.success) {
         deleted.push(id);
-      } catch (dbError) {
-        logError(env, "Failed to delete image metadata from D1", dbError, { id });
-        failures.push({
-          id,
-          reason: dbError instanceof Error ? dbError.message : String(dbError),
-        });
+      } else {
+        throw new Error("D1 delete failed");
       }
+    } catch (error) {
+      logError(env, "Failed to delete image", error, { id, objectKey });
+      failures.push({
+        id,
+        reason: error instanceof Error ? error.message : String(error),
+      });
     }
-
-    await env.IMGDOSE_DB.prepare("COMMIT").run();
-  } catch (transactionError) {
-    await env.IMGDOSE_DB.prepare("ROLLBACK").run();
-    logError(env, "Transaction failure while deleting images", transactionError, { ids });
-    return json(env, request, {
-      ok: false,
-      error:
-        transactionError instanceof Error
-          ? transactionError.message
-          : String(transactionError),
-    }, 500);
   }
 
   const hasSuccess = deleted.length > 0;
