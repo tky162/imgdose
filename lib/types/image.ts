@@ -31,4 +31,5 @@ export interface ImageListResponse {
   items: ImageRecord[];
   pagination: ImageListPagination;
   stats: ImageListStats;
+  error?: string;
 }

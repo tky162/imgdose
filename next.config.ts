@@ -1,12 +1,16 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Cloudflare Pages compatibility
+  // Static export for Cloudflare Pages
   output: "export",
-  distDir: ".next",
+
+  // Disable image optimization (not supported on Pages)
   images: {
-    unoptimized: true, // Cloudflare Pages doesn't support Next.js Image Optimization
+    unoptimized: true,
   },
+
+  // Disable trailing slashes for cleaner URLs
+  trailingSlash: false,
 };
 
 export default nextConfig;
