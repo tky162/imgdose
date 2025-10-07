@@ -9,10 +9,7 @@ const nextConfig: NextConfig = {
     unoptimized: true,
   },
 
-  // Disable trailing slashes for cleaner URLs
-  trailingSlash: false,
-
-  // Exclude workers from TypeScript checks
+  // Exclude workers from TypeScript and ESLint checks
   typescript: {
     ignoreBuildErrors: false,
   },

@@ -4,8 +4,8 @@
 
 imgdose consists of two deployable components:
 
-1. **Next.js Dashboard** → Cloudflare Pages (auto-deployed via GitHub)
-2. **Workers API** → Cloudflare Workers (manual deployment via `wrangler`)
+1. **Next.js Dashboard** → Cloudflare Pages (Git Integration で自動デプロイ)
+2. **Workers API** → Cloudflare Workers (手動デプロイ via `wrangler`)
 
 ---
 
@@ -15,14 +15,14 @@ imgdose consists of two deployable components:
 
 - Wrangler authenticated to your Cloudflare account (`npm run cf:whoami`)
 - D1 database and R2 bucket already created
-- Secrets configured (see below)
+- Secrets configured
 
 ### Apply D1 Migrations
 
 Before deploying the Worker, ensure the D1 schema is applied:
 
 ```bash
-npm run cf:d1:migrate
+npm run cf:d1:migrate -- --remote
 ```
 
 This runs migrations from `db/migrations/` against the production D1 database.
@@ -54,7 +54,7 @@ This command:
 - Bundles `workers/api/src/index.ts`
 - Uploads to Cloudflare Workers
 - Binds R2 bucket (`IMGDOSE_BUCKET`) and D1 database (`IMGDOSE_DB`)
-- Applies environment variables from `wrangler.toml` (`IMGDOSE_CORS_ORIGIN`, `IMGDOSE_BUCKET_NAME`, `IMGDOSE_LOG_LEVEL`)
+- Applies environment variables from `wrangler.toml`
 
 After deployment, the Worker will be accessible at:
 
@@ -62,15 +62,13 @@ After deployment, the Worker will be accessible at:
 https://imgdose-api.<your-subdomain>.workers.dev
 ```
 
-Or your custom domain if configured.
-
 ### Update CORS Origin
 
-For production, update `IMGDOSE_CORS_ORIGIN` in `wrangler.toml`:
+For production, update `IMGDOSE_CORS_ORIGIN` in `wrangler.toml` after Pages deployment:
 
 ```toml
 [vars]
-IMGDOSE_CORS_ORIGIN = "https://your-pages-domain.pages.dev"
+IMGDOSE_CORS_ORIGIN = "https://imgdose.pages.dev"  # Pages URL に置き換え
 ```
 
 Then redeploy:
@@ -81,61 +79,77 @@ npm run cf:deploy
 
 ---
 
-## 2. Cloudflare Pages Deployment
+## 2. Cloudflare Pages Deployment (Git Integration)
 
-### Setup via Dashboard
+### Setup via Cloudflare Dashboard
 
-1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Workers & Pages** → **Create application** → **Pages**
-2. Connect your GitHub repository (`imgdose`)
-3. Configure build settings:
-   - **Framework preset**: Next.js
-   - **Build command**: `npm run build`
-   - **Build output directory**: `.next`
-   - **Node version**: `20` (set via environment variable `NODE_VERSION=20`)
+1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com/)
+2. **Workers & Pages** → **Create application** → **Pages** → **Connect to Git**
+3. **Connect GitHub account** (初回のみ)
+4. リポジトリ `tky162/imgdose` を選択
+5. **Set up builds and deployments** で以下を設定:
 
-### Environment Variables
+   | Setting | Value |
+   |---------|-------|
+   | **Production branch** | `main` |
+   | **Framework preset** | `Next.js` |
+   | **Build command** | `npm run build` |
+   | **Build output directory** | `out` |
+   | **Root directory (optional)** | (空欄) |
 
-In the Pages dashboard, add the following environment variables:
+6. **Environment variables** セクションで以下を追加:
 
-| Key | Value | Description |
-|-----|-------|-------------|
-| `NODE_VERSION` | `20` | Required for Next.js 15+ |
-| `NEXT_PUBLIC_IMGDOSE_API_BASE_URL` | `https://imgdose-api.<subdomain>.workers.dev` | Worker API endpoint |
-| `BASIC_AUTH_USERNAME` | `your-username` | Basic auth username |
-| `BASIC_AUTH_PASSWORD` | `your-password` | Basic auth password |
+   | Variable name | Value |
+   |---------------|-------|
+   | `NODE_VERSION` | `20` |
+   | `NEXT_PUBLIC_IMGDOSE_API_BASE_URL` | `https://imgdose-api.<subdomain>.workers.dev` |
 
-**Important**: Set these variables for **both** Production and Preview environments.
+   **Note**: Worker URL は先にデプロイしたものを指定
 
-### Deployment
+7. **Save and Deploy** をクリック
 
-Once configured, Pages will auto-deploy on every push to the `main` branch (or your configured branch).
+### デプロイ完了後
 
-- **Production URL**: `https://imgdose.pages.dev` (or custom domain)
-- **Preview URLs**: Generated for each PR/branch
+- **Production URL**: `https://imgdose.pages.dev` (または custom domain)
+- **Deployment** タブでビルドログ確認可能
+- 次回以降、`main` ブランチへの push で自動デプロイ
+
+### Preview Deployments
+
+- Pull Request 作成時に自動でプレビュー環境が作成されます
+- Preview URL: `https://<commit-hash>.imgdose.pages.dev`
 
 ---
 
-## 3. Post-Deployment Verification
+## 3. Post-Deployment Configuration
 
-### Test the Worker API
+### CORS 設定の更新
 
-```bash
-curl https://imgdose-api.<subdomain>.workers.dev/health
-```
+Pages デプロイ後、Worker の CORS 設定を更新:
 
-Expected response:
+1. `wrangler.toml` を編集:
+   ```toml
+   [vars]
+   IMGDOSE_CORS_ORIGIN = "https://imgdose.pages.dev"
+   ```
 
-```json
-{"ok":true,"timestamp":"2025-01-15T..."}
-```
+2. Worker を再デプロイ:
+   ```bash
+   npm run cf:deploy
+   ```
 
-### Test the Dashboard
+### 動作確認
 
-1. Navigate to your Pages URL
-2. Enter Basic Auth credentials
-3. Upload a test image
-4. Verify table/gallery views display correctly
-5. Test URL copy, download, delete, and ZIP archive functions
+1. **Worker API のヘルスチェック**:
+   ```bash
+   curl https://imgdose-api.<subdomain>.workers.dev/healthz
+   ```
+   期待される応答: `{"ok":true}`
+
+2. **Pages のアクセス**:
+   - ブラウザで Pages URL を開く
+   - 画像アップロード機能をテスト
+   - テーブル/ギャラリー表示を確認
 
 ---
 
@@ -162,6 +176,11 @@ After changing, redeploy the Worker:
 ```bash
 npm run cf:deploy
 ```
+
+### Pages Build Logs
+
+- Cloudflare Dashboard → **Workers & Pages** → **imgdose** → **Deployments**
+- 各デプロイをクリックして詳細ログを確認
 
 ---
 
@@ -196,7 +215,7 @@ Cloudflare Workers keeps previous versions. To rollback:
 
 1. Go to **Workers & Pages** → **imgdose** → **Custom domains**
 2. Add your domain (e.g., `imgdose.example.com`)
-3. Update DNS records as instructed
+3. Update DNS records as instructed by Cloudflare
 4. Update `NEXT_PUBLIC_IMGDOSE_API_BASE_URL` in Pages environment variables to your Worker custom domain
 
 ---
@@ -226,7 +245,7 @@ To rotate R2 access keys:
 ### Worker returns 500 errors
 
 - Check secrets are set: `npm run cf:wrangler -- secret list`
-- Verify D1 migrations applied: `npm run cf:d1:migrate`
+- Verify D1 migrations applied: `npm run cf:d1:migrate -- --remote`
 - Tail logs: `npm run cf:tail`
 
 ### CORS errors in browser
@@ -240,10 +259,17 @@ To rotate R2 access keys:
 - Check Worker logs for R2 access errors
 - Confirm Account ID secret is correct
 
-### Basic Auth not working on Pages
+### Pages build fails
 
-- Verify `BASIC_AUTH_USERNAME` and `BASIC_AUTH_PASSWORD` are set in Pages environment variables
-- Redeploy Pages (trigger via GitHub push or manual redeploy in dashboard)
+- Check build logs in Cloudflare Dashboard
+- Verify `NODE_VERSION=20` is set in environment variables
+- Ensure `npm run build` succeeds locally
+
+### Pages shows blank page
+
+- Verify `NEXT_PUBLIC_IMGDOSE_API_BASE_URL` is set correctly
+- Check browser console for errors
+- Confirm Worker is deployed and accessible
 
 ---
 
@@ -251,19 +277,21 @@ To rotate R2 access keys:
 
 **Workers (Manual)**:
 ```bash
-npm run cf:d1:migrate       # Apply schema
-npm run cf:deploy           # Deploy Worker
-npm run cf:tail             # Monitor logs
+npm run cf:d1:migrate -- --remote  # Apply schema
+npm run cf:deploy                  # Deploy Worker
+npm run cf:tail                    # Monitor logs
 ```
 
-**Pages (Automatic)**:
+**Pages (Automatic via Git Integration)**:
 - Push to `main` branch → auto-deploys
+- No GitHub Secrets required
+- All configuration in Cloudflare Dashboard
 
 **First-time setup checklist**:
-- [ ] D1 migrations applied
-- [ ] Worker secrets configured (R2 keys, Account ID)
-- [ ] Worker deployed
-- [ ] Pages connected to GitHub
-- [ ] Pages environment variables set (API URL, Basic Auth)
-- [ ] CORS origin updated in `wrangler.toml`
+- [x] D1 migrations applied
+- [x] Worker secrets configured (R2 keys, Account ID)
+- [x] Worker deployed
+- [ ] Pages connected to GitHub via Cloudflare Dashboard
+- [ ] Pages environment variables set (`NODE_VERSION`, `NEXT_PUBLIC_IMGDOSE_API_BASE_URL`)
+- [ ] CORS origin updated in `wrangler.toml` after Pages deployment
 - [ ] Test upload/download/delete/ZIP functions

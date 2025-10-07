@@ -1,6 +1,0 @@
-workers/
-scripts/
-*.config.*
-.next/
-out/
-node_modules/
