@@ -1,0 +1,45 @@
+{
+  "name": "imgdose-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "next build --turbopack",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "cf:wrangler": "node scripts/wrangler.mjs",
+    "cf:dev": "node scripts/wrangler.mjs dev --local",
+    "cf:deploy": "node scripts/wrangler.mjs deploy",
+    "cf:whoami": "node scripts/wrangler.mjs whoami",
+    "cf:tail": "node scripts/wrangler.mjs tail --format=pretty",
+    "cf:d1:migrate": "node scripts/wrangler.mjs d1 migrations apply imgdose"
+  },
+  "dependencies": {
+    "next": "15.5.4",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250111.0",
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.2.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/jsdom": "^21.1.6",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.4",
+    "jsdom": "^26.0.0",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^2.1.8",
+    "wrangler": "^4.42.0"
+  }
+}

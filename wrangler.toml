@@ -1,0 +1,22 @@
+name = "imgdose-api"
+main = "workers/api/src/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+logpush = true
+workers_dev = false
+
+[vars]
+IMGDOSE_CORS_ORIGIN = "http://localhost:3000"
+IMGDOSE_BUCKET_NAME = "imgdose"
+IMGDOSE_LOG_LEVEL = "info"
+
+[[r2_buckets]]
+binding = "IMGDOSE_BUCKET"
+bucket_name = "imgdose"
+
+[[d1_databases]]
+binding = "IMGDOSE_DB"
+database_name = "imgdose"
+database_id = "15159950-ffcd-4c1b-9bf7-53981c0a8d8f"
+migrations_dir = "db/migrations"

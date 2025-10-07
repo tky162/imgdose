@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "types": ["@cloudflare/workers-types"],
+    "noEmit": true,
+    "allowJs": false,
+    "resolveJsonModule": false,
+    "isolatedModules": false
+  },
+  "include": ["workers/**/*.ts"]
+}
