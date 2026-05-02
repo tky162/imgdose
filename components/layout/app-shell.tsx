@@ -3,8 +3,7 @@ import type { ReactNode } from "react";
 
 const NAV_ITEMS = [
   { label: "ダッシュボード", href: "/" },
-  { label: "アップロード", href: "#upload", disabled: true },
-  { label: "設定", href: "#settings", disabled: true },
+  { label: "バッチ", href: "/batches" },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -26,25 +25,15 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
           </div>
           <nav className="flex flex-wrap items-center gap-2 text-sm font-medium text-slate-500">
-            {NAV_ITEMS.map((item) =>
-              item.disabled ? (
-                <span
-                  key={item.label}
-                  className="cursor-not-allowed rounded-full border border-dashed border-slate-200 px-3 py-1.5 text-slate-300"
-                  title="近日実装予定"
-                >
-                  {item.label}
-                </span>
-              ) : (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className="rounded-full border border-transparent px-3 py-1.5 transition hover:border-slate-200 hover:text-slate-900"
-                >
-                  {item.label}
-                </Link>
-              ),
-            )}
+            {NAV_ITEMS.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="rounded-full border border-transparent px-3 py-1.5 transition hover:border-slate-200 hover:text-slate-900"
+              >
+                {item.label}
+              </Link>
+            ))}
           </nav>
         </div>
       </header>

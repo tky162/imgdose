@@ -11,6 +11,15 @@ const ALLOWED_MIME_TYPES = [
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB
 const MAX_ARCHIVE_ITEMS = 50;
 
+function generateBatchId(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  for (let i = 0; i < 6; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
 export interface Env {
   IMGDOSE_BUCKET: R2Bucket;
   IMGDOSE_DB: D1Database;
@@ -106,7 +115,7 @@ function validateFile(file: File): void {
   }
 }
 
-async function storeFile(env: Env, file: File, request: Request): Promise<StoredImage> {
+async function storeFile(env: Env, file: File, request: Request, batchInfo?: { batchId: string; sequenceNumber: number }): Promise<StoredImage> {
   const timestamp = Date.now();
   const id = crypto.randomUUID();
   const sanitized = sanitizeFilename(file.name || "unnamed");
@@ -124,14 +133,16 @@ async function storeFile(env: Env, file: File, request: Request): Promise<Stored
     },
   });
 
-  // Build public URL (custom domain if configured)
+  // Build public URL (batch short URL or normal URL)
   const publicBase = env.IMGDOSE_PUBLIC_URL_BASE ?? new URL(request.url).origin;
-  const publicUrl = `${publicBase}/files/${objectKey}`;
+  const publicUrl = batchInfo
+    ? `${publicBase}/${batchInfo.batchId}/${String(batchInfo.sequenceNumber).padStart(3, "0")}`
+    : `${publicBase}/files/${objectKey}`;
 
   // Insert into D1
   const result = await env.IMGDOSE_DB.prepare(
-    `INSERT INTO images (id, object_key, original_filename, content_type, file_size, uploaded_at, file_extension, public_url)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO images (id, object_key, original_filename, content_type, file_size, uploaded_at, file_extension, public_url, batch_id, sequence_number)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -141,7 +152,9 @@ async function storeFile(env: Env, file: File, request: Request): Promise<Stored
       file.size,
       timestamp,
       extension,
-      publicUrl
+      publicUrl,
+      batchInfo?.batchId ?? null,
+      batchInfo?.sequenceNumber ?? null
     )
     .run();
 
@@ -199,6 +212,32 @@ export default {
 
     if (request.method === "GET" && url.pathname.startsWith("/files/")) {
       return handleFileServe(request, env);
+    }
+
+    // Batch CRUD
+    if (request.method === "POST" && url.pathname === "/batches") {
+      return handleBatchCreate(request, env);
+    }
+    if (request.method === "GET" && url.pathname === "/batches") {
+      return handleBatchList(request, env);
+    }
+    if (request.method === "POST" && /^\/batches\/[a-z0-9]{6}\/upload$/.test(url.pathname)) {
+      const batchId = url.pathname.split("/")[2];
+      return handleBatchUpload(request, env, batchId);
+    }
+    if (request.method === "GET" && /^\/batches\/[a-z0-9]{6}\/markdown$/.test(url.pathname)) {
+      const batchId = url.pathname.split("/")[2];
+      return handleBatchMarkdown(request, env, batchId);
+    }
+    if (request.method === "DELETE" && /^\/batches\/[a-z0-9]{6}$/.test(url.pathname)) {
+      const batchId = url.pathname.split("/")[2];
+      return handleBatchDelete(request, env, batchId);
+    }
+
+    // Short URL: GET /{batchId}/{seq} — 6-char alphanumeric + 1-3 digits
+    const shortMatch = url.pathname.match(/^\/([a-z0-9]{6})\/(\d{1,3})$/i);
+    if (request.method === "GET" && shortMatch) {
+      return handleBatchShortUrl(request, env, shortMatch[1], parseInt(shortMatch[2], 10));
     }
 
     return json(env, request, { ok: false, error: "Not Found" }, 404);
@@ -537,6 +576,130 @@ async function handleImageArchive(request: Request, env: Env): Promise<Response>
     logError(env, "Unexpected error while creating ZIP archive", error, { ids });
     return json(env, request, { ok: false, error: "ZIP の生成中にエラーが発生しました。" }, 500);
   }
+}
+
+async function handleBatchCreate(request: Request, env: Env): Promise<Response> {
+  let name: string | null = null;
+  try {
+    const body = await request.json() as { name?: string };
+    name = body.name?.trim() || null;
+  } catch { /* no body is fine */ }
+
+  let batchId = generateBatchId();
+  for (let i = 0; i < 5; i++) {
+    const existing = await env.IMGDOSE_DB.prepare("SELECT id FROM batches WHERE batch_id = ?").bind(batchId).first();
+    if (!existing) break;
+    batchId = generateBatchId();
+  }
+
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  await env.IMGDOSE_DB.prepare(
+    "INSERT INTO batches (id, batch_id, name, total_images, created_at) VALUES (?, ?, ?, 0, ?)"
+  ).bind(id, batchId, name, now).run();
+
+  return json(env, request, { ok: true, batchId, name });
+}
+
+async function handleBatchList(request: Request, env: Env): Promise<Response> {
+  const { results } = await env.IMGDOSE_DB.prepare(
+    "SELECT batch_id, name, total_images, created_at FROM batches ORDER BY created_at DESC LIMIT 100"
+  ).all<{ batch_id: string; name: string | null; total_images: number; created_at: number }>();
+
+  return json(env, request, { ok: true, batches: results ?? [] });
+}
+
+async function handleBatchUpload(request: Request, env: Env, batchId: string): Promise<Response> {
+  const batch = await env.IMGDOSE_DB.prepare(
+    "SELECT id, total_images FROM batches WHERE batch_id = ?"
+  ).bind(batchId).first<{ id: string; total_images: number }>();
+
+  if (!batch) return json(env, request, { ok: false, error: "Batch not found" }, 404);
+
+  const formData = await request.formData();
+  const files: File[] = [];
+  for (const value of formData.values()) {
+    if (value instanceof File && value.size > 0) files.push(value);
+  }
+  if (files.length === 0) return json(env, request, { ok: false, error: "No files provided" }, 400);
+
+  let seq = batch.total_images + 1;
+  const results: Array<{ success: boolean; filename: string; publicUrl?: string; error?: string }> = [];
+
+  for (const file of files) {
+    try {
+      validateFile(file);
+      const stored = await storeFile(env, file, request, { batchId, sequenceNumber: seq });
+      results.push({ success: true, filename: file.name, publicUrl: stored.publicUrl });
+      seq++;
+    } catch (err) {
+      results.push({ success: false, filename: file.name, error: err instanceof Error ? err.message : "Failed" });
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length;
+  await env.IMGDOSE_DB.prepare(
+    "UPDATE batches SET total_images = ? WHERE batch_id = ?"
+  ).bind(batch.total_images + successCount, batchId).run();
+
+  return json(env, request, { ok: successCount > 0, results });
+}
+
+async function handleBatchMarkdown(request: Request, env: Env, batchId: string): Promise<Response> {
+  const batch = await env.IMGDOSE_DB.prepare(
+    "SELECT batch_id FROM batches WHERE batch_id = ?"
+  ).bind(batchId).first();
+  if (!batch) return json(env, request, { ok: false, error: "Batch not found" }, 404);
+
+  const { results } = await env.IMGDOSE_DB.prepare(
+    "SELECT sequence_number FROM images WHERE batch_id = ? ORDER BY sequence_number ASC"
+  ).bind(batchId).all<{ sequence_number: number }>();
+
+  const publicBase = env.IMGDOSE_PUBLIC_URL_BASE ?? new URL(request.url).origin;
+  const urls = (results ?? []).map(r =>
+    `${publicBase}/${batchId}/${String(r.sequence_number).padStart(3, "0")}`
+  );
+
+  return json(env, request, { ok: true, urls, markdown: urls.join("\n") });
+}
+
+async function handleBatchDelete(request: Request, env: Env, batchId: string): Promise<Response> {
+  const batch = await env.IMGDOSE_DB.prepare(
+    "SELECT id FROM batches WHERE batch_id = ?"
+  ).bind(batchId).first();
+  if (!batch) return json(env, request, { ok: false, error: "Batch not found" }, 404);
+
+  const { results: images } = await env.IMGDOSE_DB.prepare(
+    "SELECT object_key FROM images WHERE batch_id = ?"
+  ).bind(batchId).all<{ object_key: string }>();
+
+  for (const img of images ?? []) {
+    await env.IMGDOSE_BUCKET.delete(img.object_key);
+  }
+  await env.IMGDOSE_DB.prepare("DELETE FROM images WHERE batch_id = ?").bind(batchId).run();
+  await env.IMGDOSE_DB.prepare("DELETE FROM batches WHERE batch_id = ?").bind(batchId).run();
+
+  return json(env, request, { ok: true, deleted: images?.length ?? 0 });
+}
+
+async function handleBatchShortUrl(request: Request, env: Env, batchId: string, seq: number): Promise<Response> {
+  const row = await env.IMGDOSE_DB.prepare(
+    "SELECT object_key FROM images WHERE batch_id = ? AND sequence_number = ?"
+  ).bind(batchId, seq).first<{ object_key: string }>();
+
+  if (!row) return new Response("Not found", { status: 404 });
+
+  const object = await env.IMGDOSE_BUCKET.get(row.object_key);
+  if (!object) return new Response("Not found", { status: 404 });
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("etag", object.httpEtag);
+  headers.set("cache-control", "public, max-age=31536000, immutable");
+  const corsHeaders = buildCorsHeaders(env, request);
+  corsHeaders.forEach((value, key) => headers.set(key, value));
+
+  return new Response(object.body, { headers });
 }
 
 function sanitizeArchiveName(original: string, extension: string | null): string {
