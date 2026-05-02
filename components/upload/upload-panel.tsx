@@ -35,6 +35,44 @@ const ACCEPTED_FILE_TYPES = [
 
 const ACCEPT_ATTRIBUTE = ".jpg,.jpeg,.png,.webp,.gif,.svg";
 
+function UrlCopyPanel({ results }: { results: UploadOutcome[] }) {
+  const [copied, setCopied] = useState(false);
+  const urls = results
+    .filter((r): r is Extract<UploadOutcome, { success: true }> => r.success)
+    .map((r) => r.image.publicUrl);
+  const text = urls.join("\n");
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="rounded-md border border-slate-200 bg-slate-50 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-slate-600">
+          URL一覧 ({urls.length}件)
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="rounded px-3 py-1 text-xs font-medium bg-slate-800 text-white hover:bg-slate-700 transition-colors"
+        >
+          {copied ? "コピー済み ✓" : "全URLをコピー"}
+        </button>
+      </div>
+      <textarea
+        readOnly
+        value={text}
+        rows={Math.min(urls.length, 5)}
+        className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 font-mono resize-none focus:outline-none"
+        onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+      />
+    </div>
+  );
+}
+
 interface UploadPanelProps {
   onComplete?: (didUpload: boolean) => void;
 }
@@ -232,6 +270,12 @@ export function UploadPanel({ onComplete }: UploadPanelProps) {
       {results.length > 0 && (
         <div className="mt-6 space-y-3">
           <h3 className="text-sm font-semibold text-slate-700">アップロード結果</h3>
+
+          {/* 成功した URL の一括コピー */}
+          {results.some((r) => r.success) && (
+            <UrlCopyPanel results={results} />
+          )}
+
           <ul className="space-y-2 text-sm">
             {results.map((result) =>
               result.success ? (

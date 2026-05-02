@@ -6,10 +6,15 @@ compatibility_flags = ["nodejs_compat"]
 logpush = true
 workers_dev = true
 
+routes = [
+  { pattern = "img.takayamalog.com", custom_domain = true }
+]
+
 [vars]
-IMGDOSE_CORS_ORIGIN = "https://imgdose.pages.dev"
+IMGDOSE_CORS_ORIGIN = "https://imgdose.pages.dev,https://tky-182.pages.dev"
 IMGDOSE_BUCKET_NAME = "imgdose"
 IMGDOSE_LOG_LEVEL = "info"
+IMGDOSE_PUBLIC_URL_BASE = "https://img.takayamalog.com"
 
 [[r2_buckets]]
 binding = "IMGDOSE_BUCKET"

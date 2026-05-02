@@ -20,6 +20,7 @@ export interface Env {
   IMGDOSE_R2_SECRET_KEY: string;
   IMGDOSE_CORS_ORIGIN?: string;
   IMGDOSE_LOG_LEVEL?: string;
+  IMGDOSE_PUBLIC_URL_BASE?: string;
 }
 
 type UploadResult =
@@ -123,9 +124,9 @@ async function storeFile(env: Env, file: File, request: Request): Promise<Stored
     },
   });
 
-  // Build public URL via Worker
-  const workerUrl = new URL(request.url);
-  const publicUrl = `${workerUrl.origin}/files/${objectKey}`;
+  // Build public URL (custom domain if configured)
+  const publicBase = env.IMGDOSE_PUBLIC_URL_BASE ?? new URL(request.url).origin;
+  const publicUrl = `${publicBase}/files/${objectKey}`;
 
   // Insert into D1
   const result = await env.IMGDOSE_DB.prepare(
