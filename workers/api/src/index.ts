@@ -45,6 +45,7 @@ interface StoredImage {
   uploadedAt: string;
   fileExtension?: string;
   publicUrl: string;
+  shortId?: string;
 }
 
 interface DbImageRow {
@@ -56,6 +57,7 @@ interface DbImageRow {
   uploaded_at: number;
   file_extension: string | null;
   public_url: string;
+  short_id: string | null;
 }
 
 type SortKey = "uploadedAt" | "originalFilename" | "fileSize";
@@ -133,16 +135,30 @@ async function storeFile(env: Env, file: File, request: Request, batchInfo?: { b
     },
   });
 
-  // Build public URL (batch short URL or normal URL)
+  // Build public URL
   const publicBase = env.IMGDOSE_PUBLIC_URL_BASE ?? new URL(request.url).origin;
-  const publicUrl = batchInfo
-    ? `${publicBase}/${batchInfo.batchId}/${String(batchInfo.sequenceNumber).padStart(3, "0")}`
-    : `${publicBase}/files/${objectKey}`;
+  let publicUrl: string;
+  let shortId: string | null = null;
+
+  if (batchInfo) {
+    publicUrl = `${publicBase}/${batchInfo.batchId}/${String(batchInfo.sequenceNumber).padStart(3, "0")}`;
+  } else {
+    // 単品: short_id を生成して /{shortId}.{ext} 形式にする
+    shortId = generateBatchId(); // 同じ6文字ランダム生成を流用
+    for (let i = 0; i < 5; i++) {
+      const existing = await env.IMGDOSE_DB.prepare("SELECT id FROM images WHERE short_id = ?").bind(shortId).first();
+      if (!existing) break;
+      shortId = generateBatchId();
+    }
+    publicUrl = extension
+      ? `${publicBase}/${shortId}.${extension}`
+      : `${publicBase}/${shortId}`;
+  }
 
   // Insert into D1
   const result = await env.IMGDOSE_DB.prepare(
-    `INSERT INTO images (id, object_key, original_filename, content_type, file_size, uploaded_at, file_extension, public_url, batch_id, sequence_number)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO images (id, object_key, original_filename, content_type, file_size, uploaded_at, file_extension, public_url, batch_id, sequence_number, short_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -154,7 +170,8 @@ async function storeFile(env: Env, file: File, request: Request, batchInfo?: { b
       extension,
       publicUrl,
       batchInfo?.batchId ?? null,
-      batchInfo?.sequenceNumber ?? null
+      batchInfo?.sequenceNumber ?? null,
+      shortId
     )
     .run();
 
@@ -179,6 +196,7 @@ async function storeFile(env: Env, file: File, request: Request, batchInfo?: { b
     uploadedAt: new Date(timestamp).toISOString(),
     fileExtension: extension || undefined,
     publicUrl,
+    shortId: shortId || undefined,
   };
 }
 
@@ -240,6 +258,12 @@ export default {
       return handleBatchShortUrl(request, env, shortMatch[1], parseInt(shortMatch[2], 10));
     }
 
+    // Single image short URL: GET /{shortId}.{ext}
+    const singleMatch = url.pathname.match(/^\/([a-z0-9]{6})\.[a-z0-9]+$/i);
+    if (request.method === "GET" && singleMatch) {
+      return handleSingleShortUrl(request, env, singleMatch[1]);
+    }
+
     return json(env, request, { ok: false, error: "Not Found" }, 404);
   },
 };
@@ -291,28 +315,14 @@ async function handleImageUpload(request: Request, env: Env): Promise<Response> 
     return json(env, request, { ok: false, error: "No file was attached." }, 400);
   }
 
-  // 単発アップロードでも短縮URLを付与するため自動バッチを作成
-  let batchId = generateBatchId();
-  for (let i = 0; i < 5; i++) {
-    const existing = await env.IMGDOSE_DB.prepare("SELECT id FROM batches WHERE batch_id = ?").bind(batchId).first();
-    if (!existing) break;
-    batchId = generateBatchId();
-  }
-  const batchUuid = crypto.randomUUID();
-  await env.IMGDOSE_DB.prepare(
-    "INSERT INTO batches (id, batch_id, name, total_images, created_at) VALUES (?, ?, ?, 0, ?)"
-  ).bind(batchUuid, batchId, null, Date.now()).run();
-
   const results: UploadResult[] = [];
-  let seq = 1;
 
   for (const file of files) {
     const filename = file.name || "noname";
     try {
       validateFile(file);
-      const stored = await storeFile(env, file, request, { batchId, sequenceNumber: seq });
+      const stored = await storeFile(env, file, request);
       results.push({ success: true, filename, image: stored });
-      seq++;
     } catch (error) {
       logError(env, "Failed to upload file", error, { filename });
       const message = error instanceof Error ? error.message : "Upload failed.";
@@ -321,11 +331,6 @@ async function handleImageUpload(request: Request, env: Env): Promise<Response> 
   }
 
   const successCount = results.filter((item) => item.success).length;
-  if (successCount > 0) {
-    await env.IMGDOSE_DB.prepare(
-      "UPDATE batches SET total_images = ? WHERE batch_id = ?"
-    ).bind(successCount, batchId).run();
-  }
 
   const hasSuccess = successCount > 0;
   const status = hasSuccess
@@ -703,6 +708,26 @@ async function handleBatchDelete(request: Request, env: Env, batchId: string): P
   return json(env, request, { ok: true, deleted: images?.length ?? 0 });
 }
 
+async function handleSingleShortUrl(request: Request, env: Env, shortId: string): Promise<Response> {
+  const row = await env.IMGDOSE_DB.prepare(
+    "SELECT object_key FROM images WHERE short_id = ? LIMIT 1"
+  ).bind(shortId).first<{ object_key: string }>();
+
+  if (!row) return new Response("Not found", { status: 404 });
+
+  const object = await env.IMGDOSE_BUCKET.get(row.object_key);
+  if (!object) return new Response("Not found", { status: 404 });
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("etag", object.httpEtag);
+  headers.set("cache-control", "public, max-age=31536000, immutable");
+  const corsHeaders = buildCorsHeaders(env, request);
+  corsHeaders.forEach((value, key) => headers.set(key, value));
+
+  return new Response(object.body, { headers });
+}
+
 async function handleBatchShortUrl(request: Request, env: Env, batchId: string, seq: number): Promise<Response> {
   const row = await env.IMGDOSE_DB.prepare(
     "SELECT object_key FROM images WHERE batch_id = ? AND sequence_number = ?"
@@ -802,6 +827,7 @@ function mapImageRow(row: DbImageRow): StoredImage {
       row.uploaded_at > 0 ? new Date(Number(row.uploaded_at)).toISOString() : new Date(0).toISOString(),
     fileExtension: row.file_extension ?? undefined,
     publicUrl: String(row.public_url ?? ""),
+    shortId: row.short_id ?? undefined,
   };
 }
 
