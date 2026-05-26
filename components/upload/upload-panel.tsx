@@ -2,6 +2,7 @@
 
 import { buildApiUrl, getApiBaseUrl } from "@/lib/api-config";
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -92,6 +93,49 @@ export function UploadPanel({ onComplete }: UploadPanelProps) {
     setErrorMessage(null);
     setResults([]);
   };
+
+  // クリップボードからペーストで即アップロード
+  useEffect(() => {
+    const handlePaste = async (e: ClipboardEvent) => {
+      const items = Array.from(e.clipboardData?.items ?? []);
+      const imageItems = items.filter((item) => item.type.startsWith("image/"));
+      if (imageItems.length === 0) return;
+
+      e.preventDefault();
+      const files = imageItems
+        .map((item) => item.getAsFile())
+        .filter((f): f is File => f !== null);
+
+      if (!apiBaseUrl) return;
+      setIsSubmitting(true);
+      setErrorMessage(null);
+
+      const formData = new FormData();
+      files.forEach((file, i) => {
+        const ext = file.type.split("/")[1] || "png";
+        formData.append("files", file, `clipboard-${Date.now()}-${i}.${ext}`);
+      });
+
+      try {
+        const response = await fetch(buildApiUrl("/images", apiBaseUrl), {
+          method: "POST",
+          body: formData,
+        });
+        const payload = await response.json();
+        const newResults = Array.isArray(payload?.results) ? (payload.results as UploadOutcome[]) : [];
+        setResults(newResults);
+        const successCount = newResults.filter((r) => r.success).length;
+        onComplete?.(successCount > 0);
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "ペーストアップロードに失敗しました。");
+      } finally {
+        setIsSubmitting(false);
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [apiBaseUrl, onComplete]);
 
   const handleFormReset = () => {
     setSelectedFiles([]);
@@ -218,6 +262,9 @@ export function UploadPanel({ onComplete }: UploadPanelProps) {
           </label>
           <p className="mt-3 text-xs text-slate-500">
             選択後に以下のリストで内容を確認できます。
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            Ctrl+V でクリップボードの画像を即アップロードできます。
           </p>
         </div>
 

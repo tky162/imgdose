@@ -291,14 +291,28 @@ async function handleImageUpload(request: Request, env: Env): Promise<Response> 
     return json(env, request, { ok: false, error: "No file was attached." }, 400);
   }
 
+  // 単発アップロードでも短縮URLを付与するため自動バッチを作成
+  let batchId = generateBatchId();
+  for (let i = 0; i < 5; i++) {
+    const existing = await env.IMGDOSE_DB.prepare("SELECT id FROM batches WHERE batch_id = ?").bind(batchId).first();
+    if (!existing) break;
+    batchId = generateBatchId();
+  }
+  const batchUuid = crypto.randomUUID();
+  await env.IMGDOSE_DB.prepare(
+    "INSERT INTO batches (id, batch_id, name, total_images, created_at) VALUES (?, ?, ?, 0, ?)"
+  ).bind(batchUuid, batchId, null, Date.now()).run();
+
   const results: UploadResult[] = [];
+  let seq = 1;
 
   for (const file of files) {
     const filename = file.name || "noname";
     try {
       validateFile(file);
-      const stored = await storeFile(env, file, request);
+      const stored = await storeFile(env, file, request, { batchId, sequenceNumber: seq });
       results.push({ success: true, filename, image: stored });
+      seq++;
     } catch (error) {
       logError(env, "Failed to upload file", error, { filename });
       const message = error instanceof Error ? error.message : "Upload failed.";
@@ -306,7 +320,14 @@ async function handleImageUpload(request: Request, env: Env): Promise<Response> 
     }
   }
 
-  const hasSuccess = results.some((result) => result.success);
+  const successCount = results.filter((item) => item.success).length;
+  if (successCount > 0) {
+    await env.IMGDOSE_DB.prepare(
+      "UPDATE batches SET total_images = ? WHERE batch_id = ?"
+    ).bind(successCount, batchId).run();
+  }
+
+  const hasSuccess = successCount > 0;
   const status = hasSuccess
     ? results.every((result) => result.success)
       ? 200
@@ -315,7 +336,7 @@ async function handleImageUpload(request: Request, env: Env): Promise<Response> 
 
   logDebug(env, "Upload summary", {
     requested: files.length,
-    success: results.filter((item) => item.success).length,
+    success: successCount,
     failure: results.filter((item) => !item.success).length,
   });
 
